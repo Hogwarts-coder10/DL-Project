@@ -1,7 +1,7 @@
 import os
 import tensorflow as tf
 from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint
+from keras.callbacks import ModelCheckpoint,CSVLogger
 from sklearn.model_selection import train_test_split
 
 # Import our custom modules
@@ -41,6 +41,7 @@ def main():
 
     # 5. Setup Callbacks (Save the best model automatically)
     os.makedirs('saved_models', exist_ok=True)
+    os.makedirs('logs',exist_ok=True)
     checkpoint = ModelCheckpoint(
         filepath='saved_models/unet_plus_plus_best.keras',
         monitor='val_dice_coef',
@@ -49,12 +50,13 @@ def main():
         verbose=1
     )
 
+    csv_logger = CSVLogger('logs/training_history.csv')
     # 6. Execute Training Loop
     history = model.fit(
         train_generator,
         validation_data=val_generator,
         epochs=30, 
-        callbacks=[checkpoint],
+        callbacks=[checkpoint,csv_logger],
         verbose='auto'
     )
     
