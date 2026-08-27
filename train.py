@@ -61,7 +61,7 @@ def main():
     history = model.fit(
         train_generator,
         validation_data=val_generator,
-        epochs=1,
+        epochs=30,
         callbacks=[checkpoint, csv_logger],
         verbose="auto"
     )

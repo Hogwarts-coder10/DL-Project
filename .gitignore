@@ -24,3 +24,5 @@ tf-env/
 Thumbs.db
 
 logs/
+*.zip
+*.json
