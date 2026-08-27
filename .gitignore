@@ -26,3 +26,8 @@ Thumbs.db
 logs/
 *.zip
 *.json
+
+*.png
+*.jpeg
+*.jpg
+*.csv
