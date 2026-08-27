@@ -5,7 +5,7 @@ np.ulong = np.uint64 # type: ignore
 import os
 import tensorflow as tf
 from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint, CSVLogger
+from keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 
 # Import our custom modules
@@ -30,11 +30,11 @@ def main():
     
     print(f"Training on {len(train_imgs)} images, validating on {len(val_imgs)} images.")
 
-    # 3. Instantiate Memory-Safe Generators (Updated for 4 classes)
+    # 3. Instantiate Memory-Safe Generators (4 classes)
     train_generator = LunarDataGenerator(train_imgs, train_masks, batch_size=8, num_classes=4, is_train=True)
     val_generator = LunarDataGenerator(val_imgs, val_masks, batch_size=8, num_classes=4, is_train=False)
 
-    # 4. Build and COMPILE the Model (Updated for 4 classes)
+    # 4. Build and Compile the Model (4 classes)
     model = build_unet_plus_plus(input_shape=(256, 256, 3), num_classes=4)
     
     model.compile(
@@ -43,30 +43,59 @@ def main():
         metrics=['accuracy', dice_coef]
     )
 
-    # 5. Setup Callbacks
-    os.makedirs('saved_models', exist_ok=True)
-    os.makedirs('logs', exist_ok=True)
+    # 5. Setup Paths & Callbacks for 10-Hour Google Colab Run
+    # Automatically saves directly to Google Drive if mounted, else falls back to local storage
+    drive_dir = '/content/drive/MyDrive'
+    save_dir = drive_dir if os.path.exists(drive_dir) else './saved_models'
+    log_dir = drive_dir if os.path.exists(drive_dir) else './logs'
     
-    checkpoint = ModelCheckpoint(
-        filepath='saved_models/unet_plus_plus_best.keras',
-        monitor='val_dice_coef',
-        mode='max',
-        save_best_only=True,
-        verbose=1
-    )
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
     
-    csv_logger = CSVLogger('logs/training_history.csv')
+    callbacks = [
+        # Checkpoint: Saves best model to Drive to survive Colab session disconnections
+        ModelCheckpoint(
+            filepath=os.path.join(save_dir, 'unet_plus_plus_best_10hr.keras'),
+            monitor='val_dice_coef',
+            mode='max',
+            save_best_only=True,
+            verbose=1
+        ),
+        # Reduce LR: Halves learning rate when validation dice plateaus for 3 epochs
+        ReduceLROnPlateau(
+            monitor='val_dice_coef',
+            factor=0.5,
+            patience=3,
+            mode='max',
+            min_lr=1e-7,
+            verbose=1
+        ),
+        # Early Stopping: Halts training if no improvement after 6 epochs
+        EarlyStopping(
+            monitor='val_dice_coef',
+            patience=6,
+            mode='max',
+            restore_best_weights=True,
+            verbose=1
+        ),
+        # Telemetry: Saves training logs to CSV
+        CSVLogger(
+            filename=os.path.join(log_dir, 'training_history_10hr.csv'),
+            separator=',',
+            append=False
+        )
+    ]
 
-    # 6. Execute Training Loop
+    # 6. Execute Training Loop (Target: 58 Epochs / ~10 Hours)
     history = model.fit(
         train_generator,
         validation_data=val_generator,
-        epochs=30,
-        callbacks=[checkpoint, csv_logger],
+        epochs=58,
+        callbacks=callbacks,
         verbose="auto"
     )
     
-    print("Training complete! Best model saved to 'saved_models/'")
+    print(f"Training complete! Model and telemetry saved to: {save_dir}")
 
 if __name__ == '__main__':
     main()
