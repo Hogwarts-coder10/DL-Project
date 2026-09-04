@@ -51,3 +51,4 @@ urllib3==2.7.0
 werkzeug==3.1.8
 wheel==0.48.0
 wrapt==2.3.0
+seaborn
