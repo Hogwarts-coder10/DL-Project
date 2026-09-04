@@ -9,19 +9,27 @@ import tensorflow as tf
 from keras.models import Model
 from keras.preprocessing.image import load_img, img_to_array
 from keras.utils import to_categorical
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 
 # Import custom metrics
 from src.metrics import dice_loss, dice_coef
 
-# --- Configuration Paths ---
-# IMPORTANT: Update these paths to match your local directory structure
-MODEL_PATH = "unet_plus_plus_best_10hr.keras"
-CSV_PATH = "training_history_10hr.csv"
+# ============================================================================
+# CONFIGURATION -- change these 3 lines to switch between models
+# ============================================================================
+MODEL_NAME = "unet_plus_plus"          # e.g. "unet_plus_plus" or "unet"
+MODEL_PATH = "unet_plus_plus_best_10hr.keras"   # or "saved_models/unet_best.keras"
+CSV_PATH = "training_history_10hr.csv"          # or "logs/training_history_unet.csv"
+# ============================================================================
+
 IMG_DIR = "lunar_dataset/images/render"
 MASK_DIR = "lunar_dataset/images/ground"
 IMG_SIZE = (256, 256)
 BATCH_SIZE = 16
 EVAL_SAMPLES = 500  # Number of samples to evaluate on local CPU
+
+CLASS_NAMES = ["Background", "Sky", "Small Rock", "Big Rock"]
 
 
 def iou_metric(y_true, y_pred, smooth=1e-6):
@@ -44,7 +52,6 @@ def plot_training_telemetry(csv_file):
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    # Loss
     axes[0].plot(epochs, df["loss"], label="Train Loss", color="#E64A19", lw=2)
     if "val_loss" in df.columns:
         axes[0].plot(epochs, df["val_loss"], label="Val Loss", color="#D32F2F", ls="--", lw=2)
@@ -54,7 +61,6 @@ def plot_training_telemetry(csv_file):
     axes[0].grid(True, linestyle=":", alpha=0.6)
     axes[0].legend()
 
-    # Accuracy
     axes[1].plot(epochs, df["accuracy"], label="Train Accuracy", color="#1976D2", lw=2)
     if "val_accuracy" in df.columns:
         axes[1].plot(epochs, df["val_accuracy"], label="Val Accuracy", color="#0288D1", ls="--", lw=2)
@@ -64,7 +70,6 @@ def plot_training_telemetry(csv_file):
     axes[1].grid(True, linestyle=":", alpha=0.6)
     axes[1].legend()
 
-    # Dice Score
     axes[2].plot(epochs, df["dice_coef"], label="Train Dice", color="#388E3C", lw=2)
     if "val_dice_coef" in df.columns:
         axes[2].plot(epochs, df["val_dice_coef"], label="Val Dice", color="#00796B", ls="--", lw=2)
@@ -75,8 +80,9 @@ def plot_training_telemetry(csv_file):
     axes[2].legend()
 
     plt.tight_layout()
-    plt.savefig("training_curves_output.png", dpi=300)
-    print("Saved 'training_curves_output.png'.")
+    out_path = f"training_curves_{MODEL_NAME}.png"
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved '{out_path}'.")
 
 
 def run_single_inference_and_feature_maps(model, sample_img_path):
@@ -90,10 +96,9 @@ def run_single_inference_and_feature_maps(model, sample_img_path):
     img_array = img_to_array(img) / 255.0
     input_tensor = np.expand_dims(img_array, axis=0)
 
-    # 1. Prediction (Handling multi-class output by taking argmax for display)
     pred_mask = model.predict(input_tensor, verbose=0)[0]
     num_classes = pred_mask.shape[-1]
-    
+
     if num_classes > 1:
         pred_display = np.argmax(pred_mask, axis=-1)
     else:
@@ -108,10 +113,10 @@ def run_single_inference_and_feature_maps(model, sample_img_path):
     ax[1].set_title("Predicted Segmentation Mask")
     ax[1].axis("off")
     plt.tight_layout()
-    plt.savefig("prediction_output.png", dpi=300)
-    print("Saved 'prediction_output.png'.")
+    out_path = f"prediction_{MODEL_NAME}.png"
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved '{out_path}'.")
 
-    # 2. Extract Feature Maps from first Conv2D layer
     first_conv_layer = None
     for layer in model.layers:
         if "conv2d" in layer.name.lower():
@@ -131,12 +136,14 @@ def run_single_inference_and_feature_maps(model, sample_img_path):
             axes[row, col].set_title(f"Filter {i+1}", fontsize=10)
             axes[row, col].axis("off")
         plt.tight_layout()
-        plt.savefig("feature_maps_output.png", dpi=300)
-        print("Saved 'feature_maps_output.png'.")
+        out_path = f"feature_maps_{MODEL_NAME}.png"
+        plt.savefig(out_path, dpi=300)
+        print(f"Saved '{out_path}'.")
 
 
 def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
-    """Evaluates the dataset matching mask class mapping to model outputs."""
+    """Evaluates the dataset matching mask class mapping to model outputs,
+    and generates a confusion matrix over per-pixel class predictions."""
     target_h = model.input_shape[1] if model.input_shape[1] is not None else 256
     target_w = model.input_shape[2] if model.input_shape[2] is not None else 256
     target_size = (target_w, target_h)
@@ -153,7 +160,7 @@ def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
     img_paths.sort()
     mask_paths.sort()
     total_matched = min(len(img_paths), len(mask_paths))
-    
+
     if total_matched == 0:
         print("No matched image-mask pairs found for evaluation.")
         return
@@ -164,32 +171,23 @@ def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
     batch_imgs, batch_masks = [], []
 
     for i in range(sample_count):
-        # 1. Load and normalize RGB Input Image
         im = Image.open(img_paths[i]).convert("RGB").resize(target_size, Image.BILINEAR)
         im = np.array(im, dtype=np.float32) / 255.0
-        
-        # 2. Load Mask as integer class IDs (NEAREST neighbor interpolation)
-        mk_raw = Image.open(mask_paths[i]).resize(target_size, Image.NEAREST)
+
+        mk_raw = Image.open(mask_paths[i]).convert("RGB").resize(target_size, Image.NEAREST)
         mk_arr = np.array(mk_raw)
 
-        # Handle grayscale/palette class indices (0, 1, 2, 3...)
-        if mk_arr.ndim == 3:
-            mk_arr = mk_arr[:, :, 0]
+        # Map exact RGB colors to class indices, matching src/generator.py exactly:
+        # 0 = Background, 1 = Sky (red), 2 = Small Rock (green), 3 = Big Rock (blue)
+        index_mask = np.zeros(target_size[::-1], dtype=np.uint8)
+        index_mask[np.all(mk_arr == [255, 0, 0], axis=-1)] = 1
+        index_mask[np.all(mk_arr == [0, 255, 0], axis=-1)] = 2
+        index_mask[np.all(mk_arr == [0, 0, 255], axis=-1)] = 3
 
-        # Ensure class values are integer indices within [0, num_classes-1]
-        if mk_arr.max() > num_classes - 1 and mk_arr.max() <= 255:
-            unique_vals = np.unique(mk_arr)
-            if len(unique_vals) <= num_classes:
-                val_map = {val: idx for idx, val in enumerate(sorted(unique_vals))}
-                mk_arr = np.vectorize(val_map.get)(mk_arr)
-            else:
-                mk_arr = np.clip(mk_arr, 0, num_classes - 1)
-
-        # 3. One-hot encode to target channel depth
         if num_classes > 1:
-            mk_processed = to_categorical(mk_arr, num_classes=num_classes).astype(np.float32)
+            mk_processed = to_categorical(index_mask, num_classes=num_classes).astype(np.float32)
         else:
-            mk_processed = (mk_arr > 0).astype(np.float32)[..., np.newaxis]
+            mk_processed = (index_mask > 0).astype(np.float32)[..., np.newaxis]
 
         batch_imgs.append(im)
         batch_masks.append(mk_processed)
@@ -209,12 +207,40 @@ def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
         print(f" Mean IoU (Jaccard):     {results[3]:.4f}")
     print("=" * 45)
 
+    # --- Confusion Matrix (per-pixel, across all evaluated samples) ---
+    print("\nGenerating confusion matrix...")
+    y_pred_probs = model.predict(x_eval, batch_size=BATCH_SIZE, verbose=1)
+    y_pred_labels = np.argmax(y_pred_probs, axis=-1).flatten()
+    y_true_labels = np.argmax(y_eval, axis=-1).flatten()
+
+    labels = list(range(num_classes))
+    cm = confusion_matrix(y_true_labels, y_pred_labels, labels=labels)
+    cm_normalized = cm.astype(np.float32) / (cm.sum(axis=1, keepdims=True) + 1e-9)
+
+    display_names = CLASS_NAMES[:num_classes] if num_classes <= len(CLASS_NAMES) else [str(i) for i in labels]
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=display_names, yticklabels=display_names, ax=axes[0])
+    axes[0].set_title(f"Confusion Matrix (counts) - {MODEL_NAME}")
+    axes[0].set_xlabel("Predicted")
+    axes[0].set_ylabel("True")
+
+    sns.heatmap(cm_normalized, annot=True, fmt=".2f", cmap="Blues",
+                xticklabels=display_names, yticklabels=display_names, ax=axes[1])
+    axes[1].set_title(f"Confusion Matrix (row-normalized) - {MODEL_NAME}")
+    axes[1].set_xlabel("Predicted")
+    axes[1].set_ylabel("True")
+
+    plt.tight_layout()
+    out_path = f"confusion_matrix_{MODEL_NAME}.png"
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved '{out_path}'.")
+
 
 def main():
-    # 1. Plot Curves
     plot_training_telemetry(CSV_PATH)
 
-    # 2. Load Model
     if not os.path.exists(MODEL_PATH):
         print(f"\nModel file '{MODEL_PATH}' not found. Cannot proceed with evaluation.")
         return
@@ -222,16 +248,13 @@ def main():
     print(f"\nLoading weights from {MODEL_PATH}...")
     custom_objects = {"dice_loss": dice_loss, "dice_coef": dice_coef, "iou_metric": iou_metric}
     model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
-    
-    # Recompile with target metrics
+
     model.compile(optimizer="adam", loss=dice_loss, metrics=["accuracy", dice_coef, iou_metric])
 
-    # 3. Single inference & feature maps
     all_imgs = sorted(glob.glob(os.path.join(IMG_DIR, "*.png")) + glob.glob(os.path.join(IMG_DIR, "*.jpg")))
     if all_imgs:
         run_single_inference_and_feature_maps(model, all_imgs[0])
 
-    # 4. Quantitative Evaluation
     evaluate_dataset(model, IMG_DIR, MASK_DIR, num_samples=EVAL_SAMPLES)
 
 
