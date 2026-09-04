@@ -9,10 +9,10 @@ Evaluated across a rigorous 4-channel multi-class pipeline (e.g., sky, backgroun
 
 | Metric | Test Set Score |
 | :--- | :--- |
-| **Pixel Accuracy** | 77.90% |
-| **Mean Dice Coefficient** | 0.7808 |
-| **Mean IoU (Jaccard)** | 0.6594 |
-| **Test Loss (Dice)** | 0.2210 |
+| **Pixel Accuracy** | 96.62% |
+| **Mean Dice Coefficient** | 0.9653 |
+| **Mean IoU (Jaccard)** | 0.9359 |
+| **Test Loss (Dice)** | 0.0339 |
 
 *(Note: Evaluated on an unseen test subset using exact one-hot encoded ground truth mapping).*
 
