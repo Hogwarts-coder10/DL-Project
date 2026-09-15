@@ -1,36 +1,36 @@
 import os
 import glob
+import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from PIL import Image
 
 import tensorflow as tf
-from keras.models import Model
-from keras.preprocessing.image import load_img, img_to_array
-from keras.utils import to_categorical
+from tensorflow.keras.models import Model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.utils import to_categorical
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 
-# Import custom metrics
-from src.metrics import dice_loss, dice_coef
+# Import custom metrics from your newly refactored module structure
+from src.metrics.losses import dice_loss, dice_coef
 
 # ============================================================================
-# CONFIGURATION -- change these 3 lines to switch between models
+# CONFIGURATION
 # ============================================================================
-MODEL_NAME = "unet_plus_plus"          # e.g. "unet_plus_plus" or "unet"
-MODEL_PATH = "unet_plus_plus_best_10hr.keras"   # or "saved_models/unet_best.keras"
-CSV_PATH = "training_history_10hr.csv"          # or "logs/training_history_unet.csv"
-# ============================================================================
+MODEL_NAME = "unet_plus_plus"
+MODEL_PATH = "unet_plus_plus_best_10hr.keras"
+CSV_PATH = "training_history_10hr.csv"
 
 IMG_DIR = "lunar_dataset/images/render"
 MASK_DIR = "lunar_dataset/images/ground"
 IMG_SIZE = (256, 256)
 BATCH_SIZE = 16
-EVAL_SAMPLES = 500  # Number of samples to evaluate on local CPU
+EVAL_SAMPLES = 500
 
 CLASS_NAMES = ["Background", "Sky", "Small Rock", "Big Rock"]
-
+# ============================================================================
 
 def iou_metric(y_true, y_pred, smooth=1e-6):
     """Computes Intersection over Union (Jaccard Index)."""
@@ -80,42 +80,64 @@ def plot_training_telemetry(csv_file):
     axes[2].legend()
 
     plt.tight_layout()
-    out_path = f"training_curves_{MODEL_NAME}.png"
+    out_path = f"results/training_curves_{MODEL_NAME}.png"
     plt.savefig(out_path, dpi=300)
     print(f"Saved '{out_path}'.")
 
 
-def run_single_inference_and_feature_maps(model, sample_img_path):
-    """Generates visual segmentation map and first Conv2D layer features."""
-    if not os.path.exists(sample_img_path):
-        print(f"Sample image '{sample_img_path}' not found.")
-        return
+def generate_comparison_grid(model, img_paths, mask_paths, num_samples=5):
+    """Generates a multi-row grid comparing Input, Ground Truth, and Predictions."""
+    print(f"\nGenerating {num_samples}-image comparison grid...")
 
-    print(f"\nGenerating inference and feature maps for {sample_img_path}...")
+    # Grab a random sample of matched images/masks
+    indices = random.sample(range(len(img_paths)), min(num_samples, len(img_paths)))
+
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 4 * num_samples))
+    fig.suptitle(f"Segmentation Results - {MODEL_NAME}", fontsize=16, y=0.98)
+
+    for i, idx in enumerate(indices):
+        # 1. Load Input Image
+        im_pil = Image.open(img_paths[idx]).convert("RGB").resize(IMG_SIZE, Image.BILINEAR)
+        im_arr = np.array(im_pil, dtype=np.float32) / 255.0
+
+        # 2. Load Ground Truth (Using the exact RGB Mapping logic)
+        mk_raw = Image.open(mask_paths[idx]).convert("RGB").resize(IMG_SIZE, Image.NEAREST)
+        mk_arr = np.array(mk_raw)
+
+        gt_mask = np.zeros(IMG_SIZE, dtype=np.uint8)
+        gt_mask[np.all(mk_arr == [255, 0, 0], axis=-1)] = 1  # Sky
+        gt_mask[np.all(mk_arr == [0, 255, 0], axis=-1)] = 2  # Small Rock
+        gt_mask[np.all(mk_arr == [0, 0, 255], axis=-1)] = 3  # Big Rock
+
+        # 3. Model Prediction
+        input_tensor = np.expand_dims(im_arr, axis=0)
+        pred_probs = model.predict(input_tensor, verbose=0)[0]
+        pred_mask = np.argmax(pred_probs, axis=-1)
+
+        # Plotting
+        axes[i, 0].imshow(im_arr)
+        axes[i, 0].axis("off")
+        if i == 0: axes[i, 0].set_title("Input Image", fontsize=14)
+
+        axes[i, 1].imshow(gt_mask, cmap="viridis", vmin=0, vmax=3)
+        axes[i, 1].axis("off")
+        if i == 0: axes[i, 1].set_title("Ground Truth Mask", fontsize=14)
+
+        axes[i, 2].imshow(pred_mask, cmap="viridis", vmin=0, vmax=3)
+        axes[i, 2].axis("off")
+        if i == 0: axes[i, 2].set_title("Predicted Mask", fontsize=14)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    out_path = f"results/comparison_grid_{MODEL_NAME}.png"
+    plt.savefig(out_path, dpi=300)
+    print(f"Saved '{out_path}'.")
+
+
+def run_feature_map_extraction(model, sample_img_path):
+    """Extracts interpretable Conv2D features for the rubric requirement."""
+    print(f"\nExtracting feature maps for {sample_img_path}...")
     img = load_img(sample_img_path, target_size=IMG_SIZE, color_mode="rgb")
-    img_array = img_to_array(img) / 255.0
-    input_tensor = np.expand_dims(img_array, axis=0)
-
-    pred_mask = model.predict(input_tensor, verbose=0)[0]
-    num_classes = pred_mask.shape[-1]
-
-    if num_classes > 1:
-        pred_display = np.argmax(pred_mask, axis=-1)
-    else:
-        pred_display = (pred_mask > 0.5).astype(np.float32).squeeze()
-
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(img_array)
-    ax[0].set_title("Input Lunar Terrain")
-    ax[0].axis("off")
-
-    ax[1].imshow(pred_display, cmap="viridis")
-    ax[1].set_title("Predicted Segmentation Mask")
-    ax[1].axis("off")
-    plt.tight_layout()
-    out_path = f"prediction_{MODEL_NAME}.png"
-    plt.savefig(out_path, dpi=300)
-    print(f"Saved '{out_path}'.")
+    input_tensor = np.expand_dims(img_to_array(img) / 255.0, axis=0)
 
     first_conv_layer = None
     for layer in model.layers:
@@ -136,17 +158,14 @@ def run_single_inference_and_feature_maps(model, sample_img_path):
             axes[row, col].set_title(f"Filter {i+1}", fontsize=10)
             axes[row, col].axis("off")
         plt.tight_layout()
-        out_path = f"feature_maps_{MODEL_NAME}.png"
+        out_path = f"results/feature_maps_{MODEL_NAME}.png"
         plt.savefig(out_path, dpi=300)
         print(f"Saved '{out_path}'.")
 
 
 def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
-    """Evaluates the dataset matching mask class mapping to model outputs,
-    and generates a confusion matrix over per-pixel class predictions."""
-    target_h = model.input_shape[1] if model.input_shape[1] is not None else 256
-    target_w = model.input_shape[2] if model.input_shape[2] is not None else 256
-    target_size = (target_w, target_h)
+    """Evaluates the dataset and generates a confusion matrix."""
+    target_h, target_w = IMG_SIZE
     num_classes = model.output_shape[-1] if model.output_shape[-1] is not None else 1
 
     print(f"\nModel Configuration -> Resolution: {(target_h, target_w)}, Classes: {num_classes}")
@@ -166,35 +185,25 @@ def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
         return
 
     sample_count = min(num_samples, total_matched)
-    print(f"Running evaluation across {sample_count} samples with class encoding...")
+    print(f"Running evaluation across {sample_count} samples...")
 
     batch_imgs, batch_masks = [], []
 
     for i in range(sample_count):
-        im = Image.open(img_paths[i]).convert("RGB").resize(target_size, Image.BILINEAR)
-        im = np.array(im, dtype=np.float32) / 255.0
+        im = Image.open(img_paths[i]).convert("RGB").resize((target_w, target_h), Image.BILINEAR)
+        batch_imgs.append(np.array(im, dtype=np.float32) / 255.0)
 
-        mk_raw = Image.open(mask_paths[i]).convert("RGB").resize(target_size, Image.NEAREST)
+        mk_raw = Image.open(mask_paths[i]).convert("RGB").resize((target_w, target_h), Image.NEAREST)
         mk_arr = np.array(mk_raw)
 
-        # Map exact RGB colors to class indices, matching src/generator.py exactly:
-        # 0 = Background, 1 = Sky (red), 2 = Small Rock (green), 3 = Big Rock (blue)
-        index_mask = np.zeros(target_size[::-1], dtype=np.uint8)
+        index_mask = np.zeros((target_h, target_w), dtype=np.uint8)
         index_mask[np.all(mk_arr == [255, 0, 0], axis=-1)] = 1
         index_mask[np.all(mk_arr == [0, 255, 0], axis=-1)] = 2
         index_mask[np.all(mk_arr == [0, 0, 255], axis=-1)] = 3
 
-        if num_classes > 1:
-            mk_processed = to_categorical(index_mask, num_classes=num_classes).astype(np.float32)
-        else:
-            mk_processed = (index_mask > 0).astype(np.float32)[..., np.newaxis]
+        batch_masks.append(to_categorical(index_mask, num_classes=num_classes).astype(np.float32))
 
-        batch_imgs.append(im)
-        batch_masks.append(mk_processed)
-
-    x_eval = np.array(batch_imgs, dtype=np.float32)
-    y_eval = np.array(batch_masks, dtype=np.float32)
-
+    x_eval, y_eval = np.array(batch_imgs), np.array(batch_masks)
     results = model.evaluate(x_eval, y_eval, batch_size=BATCH_SIZE, verbose=1)
 
     print("\n" + "=" * 45)
@@ -203,58 +212,60 @@ def evaluate_dataset(model, img_dir, mask_dir, num_samples=500):
     print(f" Test Loss (Dice Loss):  {results[0]:.4f}")
     print(f" Pixel Accuracy:         {results[1] * 100:.2f}%")
     print(f" Mean Dice Coefficient:  {results[2]:.4f}")
-    if len(results) > 3:
-        print(f" Mean IoU (Jaccard):     {results[3]:.4f}")
+    if len(results) > 3: print(f" Mean IoU (Jaccard):     {results[3]:.4f}")
     print("=" * 45)
 
-    # --- Confusion Matrix (per-pixel, across all evaluated samples) ---
     print("\nGenerating confusion matrix...")
     y_pred_probs = model.predict(x_eval, batch_size=BATCH_SIZE, verbose=1)
     y_pred_labels = np.argmax(y_pred_probs, axis=-1).flatten()
     y_true_labels = np.argmax(y_eval, axis=-1).flatten()
 
-    labels = list(range(num_classes))
-    cm = confusion_matrix(y_true_labels, y_pred_labels, labels=labels)
+    cm = confusion_matrix(y_true_labels, y_pred_labels, labels=list(range(num_classes)))
     cm_normalized = cm.astype(np.float32) / (cm.sum(axis=1, keepdims=True) + 1e-9)
 
-    display_names = CLASS_NAMES[:num_classes] if num_classes <= len(CLASS_NAMES) else [str(i) for i in labels]
-
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=display_names, yticklabels=display_names, ax=axes[0])
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, ax=axes[0])
     axes[0].set_title(f"Confusion Matrix (counts) - {MODEL_NAME}")
-    axes[0].set_xlabel("Predicted")
-    axes[0].set_ylabel("True")
 
-    sns.heatmap(cm_normalized, annot=True, fmt=".2f", cmap="Blues",
-                xticklabels=display_names, yticklabels=display_names, ax=axes[1])
+    sns.heatmap(cm_normalized, annot=True, fmt=".2f", cmap="Blues", xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, ax=axes[1])
     axes[1].set_title(f"Confusion Matrix (row-normalized) - {MODEL_NAME}")
-    axes[1].set_xlabel("Predicted")
-    axes[1].set_ylabel("True")
 
     plt.tight_layout()
-    out_path = f"confusion_matrix_{MODEL_NAME}.png"
+    out_path = f"results/confusion_matrix_{MODEL_NAME}.png"
     plt.savefig(out_path, dpi=300)
     print(f"Saved '{out_path}'.")
 
 
 def main():
+    # 1. Telemetry
     plot_training_telemetry(CSV_PATH)
 
+    # 2. Model Loading
     if not os.path.exists(MODEL_PATH):
-        print(f"\nModel file '{MODEL_PATH}' not found. Cannot proceed with evaluation.")
+        print(f"\nModel file '{MODEL_PATH}' not found.")
         return
 
     print(f"\nLoading weights from {MODEL_PATH}...")
     custom_objects = {"dice_loss": dice_loss, "dice_coef": dice_coef, "iou_metric": iou_metric}
     model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
-
     model.compile(optimizer="adam", loss=dice_loss, metrics=["accuracy", dice_coef, iou_metric])
 
-    all_imgs = sorted(glob.glob(os.path.join(IMG_DIR, "*.png")) + glob.glob(os.path.join(IMG_DIR, "*.jpg")))
-    if all_imgs:
-        run_single_inference_and_feature_maps(model, all_imgs[0])
+    extensions = ("*.png", "*.jpg", "*.jpeg", "*.bmp")
+    img_paths, mask_paths = [], []
+    for ext in extensions:
+        img_paths.extend(glob.glob(os.path.join(IMG_DIR, ext)))
+        mask_paths.extend(glob.glob(os.path.join(MASK_DIR, ext)))
+    img_paths.sort()
+    mask_paths.sort()
 
+    if img_paths and mask_paths:
+        # 3. Generate the 5-Image Grid
+        generate_comparison_grid(model, img_paths, mask_paths, num_samples=5)
+
+        # 4. Extract Interpretability Feature Maps (for one random image)
+        run_feature_map_extraction(model, random.choice(img_paths))
+
+    # 5. Full Evaluation
     evaluate_dataset(model, IMG_DIR, MASK_DIR, num_samples=EVAL_SAMPLES)
 
 
