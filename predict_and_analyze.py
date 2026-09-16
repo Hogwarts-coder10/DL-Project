@@ -40,7 +40,6 @@ def build_model_factory(model_name, input_shape=(256, 256, 3), num_classes=4):
         from src.models.vnet import build_model
     elif model_name == 'segnet':
         from src.models.segnet import build_model
-
     else:
         raise ValueError(f"Model architecture '{model_name}' is not recognized.")
     return build_model(input_shape=input_shape, num_classes=num_classes)
@@ -220,6 +219,18 @@ def evaluate_dataset(model, img_dir, mask_dir, model_name, num_samples=500):
     x_eval, y_eval = np.array(batch_imgs), np.array(batch_masks)
     results = model.evaluate(x_eval, y_eval, batch_size=BATCH_SIZE, verbose=1)
 
+    # --- RESTORED QUANTITATIVE REPORT ---
+    print("\n" + "=" * 45)
+    print("        QUANTITATIVE EVALUATION REPORT       ")
+    print("=" * 45)
+    print(f" Test Loss (Dice Loss):  {results[0]:.4f}")
+    print(f" Pixel Accuracy:         {results[1] * 100:.2f}%")
+    print(f" Mean Dice Coefficient:  {results[2]:.4f}")
+    if len(results) > 3:
+        print(f" Mean IoU (Jaccard):     {results[3]:.4f}")
+    print("=" * 45)
+    # ------------------------------------
+
     print("\nGenerating confusion matrix...")
     y_pred_probs = model.predict(x_eval, batch_size=BATCH_SIZE, verbose=1)
     y_pred_labels = np.argmax(y_pred_probs, axis=-1).flatten()
@@ -243,7 +254,14 @@ def evaluate_dataset(model, img_dir, mask_dir, model_name, num_samples=500):
 
 def main():
     parser = argparse.ArgumentParser(description="Lunar Terrain Inference & Analysis")
-    parser.add_argument("--model", type=str, required=True, choices=["unet", "unet_plus_plus", "attention_unet"], help="Model architecture to analyze")
+    # UPDATED CLI CHOICES
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=["unet", "unet_plus_plus", "attention_unet", "vnet", "segnet"],
+        help="Model architecture to analyze"
+    )
     args = parser.parse_args()
 
     # Define paths dynamically just like train.py
@@ -253,17 +271,19 @@ def main():
     # 1. Telemetry
     plot_training_telemetry(csv_path, args.model)
 
-    # 2. Model Loading (Build chassis, then load weights)
+    # 2. Model Loading
     if not os.path.exists(model_path):
         print(f"\nModel file '{model_path}' not found. Have you trained it yet?")
         return
 
     print(f"\nBuilding {args.model} architecture and loading weights from {model_path}...")
     model = build_model_factory(args.model)
-    model.compile(optimizer="adam", loss=dice_loss, metrics=["accuracy", dice_coef, iou_metric])
 
-    # Load weights safely bypasses custom layer issues from load_model
+    # FIX: Load weights BEFORE compiling.
     model.load_weights(model_path)
+
+    # Compile strictly to attach the metrics
+    model.compile(optimizer="adam", loss=dice_loss, metrics=["accuracy", dice_coef, iou_metric])
 
     extensions = ("*.png", "*.jpg", "*.jpeg", "*.bmp")
     img_paths, mask_paths = [], []
