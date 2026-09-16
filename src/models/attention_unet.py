@@ -15,10 +15,10 @@ def conv_block(x, filters):
 def attention_gate(g, s, inter_channels):
     """
     Additive Attention Gate.
-    g: Gating signal from the deeper layer (coarser scale)
-    s: Skip connection from the encoder (finer scale)
+    g: Gating signal from the deeper, coarser layer (e.g., 16x16)
+    s: Skip connection from the encoder at the finer scale (e.g., 32x32)
     """
-    # Align channel dimensions
+    # Align channel dimensions and downsample spatial resolution of skip connection
     theta_x = layers.Conv2D(inter_channels, (2, 2), strides=(2, 2), padding="same")(s)
     phi_g = layers.Conv2D(inter_channels, (1, 1), padding="same")(g)
 
@@ -53,29 +53,32 @@ def build_model(input_shape=(256, 256, 3), num_classes=4):
     # --- Bottleneck ---
     b = conv_block(p4, 1024)
 
-    # --- Decoder with Attention Gates ---
+    # --- Decoder with Corrected Attention Gates ---
+    # Block 1: Gating signal is b (16x16), skip connection is c4 (32x32)
     u1 = layers.Conv2DTranspose(512, (2, 2), strides=(2, 2), padding="same")(b)
-    a1 = attention_gate(g=u1, s=c4, inter_channels=256)
+    a1 = attention_gate(g=b, s=c4, inter_channels=256)
     d1 = layers.concatenate([u1, a1])
     c5 = conv_block(d1, 512)
 
+    # Block 2: Gating signal is c5 (32x32), skip connection is c3 (64x64)
     u2 = layers.Conv2DTranspose(256, (2, 2), strides=(2, 2), padding="same")(c5)
-    a2 = attention_gate(g=u2, s=c3, inter_channels=128)
+    a2 = attention_gate(g=c5, s=c3, inter_channels=128)
     d2 = layers.concatenate([u2, a2])
     c6 = conv_block(d2, 256)
 
+    # Block 3: Gating signal is c6 (64x64), skip connection is c2 (128x128)
     u3 = layers.Conv2DTranspose(128, (2, 2), strides=(2, 2), padding="same")(c6)
-    a3 = attention_gate(g=u3, s=c2, inter_channels=64)
+    a3 = attention_gate(g=c6, s=c2, inter_channels=64)
     d3 = layers.concatenate([u3, a3])
     c7 = conv_block(d3, 128)
 
+    # Block 4: Gating signal is c7 (128x128), skip connection is c1 (256x256)
     u4 = layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding="same")(c7)
-    a4 = attention_gate(g=u4, s=c1, inter_channels=32)
+    a4 = attention_gate(g=c7, s=c1, inter_channels=32)
     d4 = layers.concatenate([u4, a4])
     c8 = conv_block(d4, 64)
 
     # --- Output Layer ---
-    # Use softmax for multi-class segmentation (4 classes)
     activation = "softmax" if num_classes > 1 else "sigmoid"
     outputs = layers.Conv2D(num_classes, (1, 1), activation=activation)(c8)
 

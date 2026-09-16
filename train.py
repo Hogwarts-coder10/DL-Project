@@ -1,11 +1,11 @@
 import os
 import argparse
 import tensorflow as tf
-from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping, ReduceLROnPlateau
 
-# Import custom loss functions and data handlers from your refactored modules
+# Import custom loss functions and data handlers
 from src.metrics.losses import dice_loss, dice_coef
-from src.generator.generator import get_dataset_generators # Assuming your generator is here
+from src.generator.generator import get_dataset_generators
 
 def build_model_factory(model_name, input_shape=(256, 256, 3), num_classes=4):
     """Dynamically routes the model build based on the user's CLI choice."""
@@ -15,34 +15,40 @@ def build_model_factory(model_name, input_shape=(256, 256, 3), num_classes=4):
         from src.models.unetplusplus import build_model
     elif model_name == "attention_unet":
         from src.models.attention_unet import build_model
+    elif model_name == 'vnet':
+        from src.models.vnet import build_model
+    elif model_name == 'segnet':
+        from src.models.segnet import build_model
     else:
         raise ValueError(f"Model architecture '{model_name}' is not recognized.")
-    
-    print(f"--> Successfully loaded {model_name} architecture.")
+
+    print(f"\n--> Successfully loaded {model_name} architecture.")
     return build_model(input_shape=input_shape, num_classes=num_classes)
 
 def main():
-    # 1. Setup Argparse for CLI choices
+    # 1. Setup Argparse for Colab-friendly CLI choices
     parser = argparse.ArgumentParser(description="Lunar Terrain Segmentation Training Pipeline")
     parser.add_argument(
-        "--model", 
-        type=str, 
+        "--model",
+        type=str,
         required=True,
         choices=["unet", "unet_plus_plus", "attention_unet"],
         help="Select the model architecture to train"
     )
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training")
-    
+
     args = parser.parse_args()
 
-    # 2. Dynamic Routing for Checkpoints and Telemetry
-    os.makedirs("saved_models", exist_ok=True)
-    os.makedirs("results", exist_ok=True)
+    # 2. Dynamic Routing for Checkpoints and Telemetry on Google Drive
+    save_dir = '/content/drive/MyDrive/DL_Project/saved_models'
+    log_dir = '/content/drive/MyDrive/DL_Project/results'
 
-    # Variables dynamically adapt based on the chosen model
-    model_save_path = f"saved_models/{args.model}_best.keras"
-    csv_log_path = f"results/training_history_{args.model}.csv"
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+
+    model_save_path = os.path.join(save_dir, f'{args.model}_best_10hr.keras')
+    csv_log_path = os.path.join(log_dir, f'training_history_{args.model}_10hr.csv')
 
     print("\n" + "="*45)
     print("        TENSORFLOW TRAINING SESSION        ")
@@ -55,27 +61,55 @@ def main():
 
     # 3. Initialize Model
     model = build_model_factory(args.model)
-    
+
     model.compile(
-        optimizer="adam", 
-        loss=dice_loss, 
+        optimizer="adam",
+        loss=dice_loss,
         metrics=["accuracy", dice_coef]
     )
 
     # 4. Define Callbacks
     callbacks = [
-        ModelCheckpoint(model_save_path, monitor="val_dice_coef", mode="max", save_best_only=True, verbose=1),
-        CSVLogger(csv_log_path, append=False),
-        EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)
+        # Checkpoint: Saves best model to Drive to survive Colab session disconnections
+        ModelCheckpoint(
+            filepath=model_save_path,
+            monitor='val_dice_coef',
+            mode='max',
+            save_best_only=True,
+            verbose=1
+        ),
+        # Reduce LR: Halves learning rate when validation dice plateaus for 3 epochs
+        ReduceLROnPlateau(
+            monitor='val_dice_coef',
+            factor=0.5,
+            patience=3,
+            mode='max',
+            min_lr=1e-7,
+            verbose=1
+        ),
+        # Early Stopping: Halts training if no improvement after 6 epochs
+        EarlyStopping(
+            monitor='val_dice_coef',
+            patience=6,
+            mode='max',
+            restore_best_weights=True,
+            verbose=1
+        ),
+        # Telemetry: Saves training logs to CSV
+        CSVLogger(
+            filename=csv_log_path,
+            separator=',',
+            append=False
+        )
     ]
 
     # 5. Load Data and Train
     train_gen, val_gen = get_dataset_generators(
-        image_dir = "lunar_dataset/images/render"
-        mask_dir = "lunar_dataset/images/ground"
+        image_dir="lunar_dataset/images/render",  # Adjust path based on where it extracts in Colab
+        mask_dir="lunar_dataset/images/ground",   # Adjust path based on where it extracts in Colab
         batch_size=args.batch_size
     )
-    
+
     print("\nStarting training loop...")
     model.fit(
         train_gen,
@@ -83,7 +117,6 @@ def main():
         epochs=args.epochs,
         callbacks=callbacks
     )
-
 
 if __name__ == "__main__":
     main()
