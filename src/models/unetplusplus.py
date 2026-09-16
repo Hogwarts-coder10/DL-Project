@@ -15,7 +15,7 @@ def conv_block(x, filters):
     x = Activation("relu")(x)
     return x
 
-def build_unet_plus_plus(input_shape=(256, 256, 3), num_classes=3):
+def build_model(input_shape=(256, 256, 3), num_classes=3):
     """
     Constructs a 4-level UNet++ architecture.
     """
