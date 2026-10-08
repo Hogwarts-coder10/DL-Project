@@ -28,3 +28,18 @@ def dice_loss(y_true, y_pred):
     Minimizing this loss maximizes the overlap.
     """
     return 1.0 - dice_coef(y_true, y_pred)
+
+def cce_loss(y_true,y_pred):
+    """
+    Combined Categorial Cross Entropy + Dice loss
+    CCE provides smooth non-zero gradients for minority classes to prevent collapse.
+    """
+
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
+    cce = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+    cce_loss = tf.reduce_mean(cce)
+    d_loss = dice_loss(y_true, y_pred)
+
+    return cce_loss + d_loss

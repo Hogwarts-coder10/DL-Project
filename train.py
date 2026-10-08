@@ -1,16 +1,12 @@
 import os
 import argparse
 import tensorflow as tf
-from tensorflow.keras import mixed_precision
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping, ReduceLROnPlateau
 
 # ============================================================================
-# GPU & MIXED PRECISION OPTIMIZATION
+# GPU VRAM ALLOCATION SETUP
 # ============================================================================
-# Enable FP16 mixed precision to cut VRAM usage by ~50%
-mixed_precision.set_global_policy('mixed_float16')
-
-# Enable dynamic memory allocation to prevent instant VRAM exhaustion
+# Enable dynamic memory growth to prevent pre-allocation spikes
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -20,8 +16,7 @@ if gpus:
         print(f"GPU memory growth setting error: {e}")
 # ============================================================================
 
-# Import custom loss functions and data handlers
-from src.metrics.losses import dice_loss, dice_coef
+from src.metrics.losses import cce_dice_loss, dice_coef
 from src.generator.generator import get_dataset_generators
 
 
@@ -45,7 +40,6 @@ def build_model_factory(model_name, input_shape=(256, 256, 3), num_classes=4):
 
 
 def main():
-    # 1. Setup Argparse for Colab-friendly CLI choices
     parser = argparse.ArgumentParser(description="Lunar Terrain Segmentation Training Pipeline")
     parser.add_argument(
         "--model",
@@ -59,7 +53,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 2. Dynamic Routing for Checkpoints and Telemetry on Google Drive
     save_dir = '/content/drive/MyDrive/DL_Project/saved_models'
     log_dir = '/content/drive/MyDrive/DL_Project/results'
 
@@ -78,18 +71,15 @@ def main():
     print(f" Checkpoint   : {model_save_path}")
     print("="*45 + "\n")
 
-    # 3. Initialize Model
     model = build_model_factory(args.model)
 
     model.compile(
-        optimizer="adam",
-        loss=dice_loss,
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss=cce_dice_loss,
         metrics=["accuracy", dice_coef]
     )
 
-    # 4. Define Callbacks
     callbacks = [
-        # Checkpoint: Saves best model to Drive to survive Colab session disconnections
         ModelCheckpoint(
             filepath=model_save_path,
             monitor='val_dice_coef',
@@ -97,7 +87,6 @@ def main():
             save_best_only=True,
             verbose=1
         ),
-        # Reduce LR: Halves learning rate when validation dice plateaus for 3 epochs
         ReduceLROnPlateau(
             monitor='val_dice_coef',
             factor=0.5,
@@ -106,15 +95,13 @@ def main():
             min_lr=1e-7,
             verbose=1
         ),
-        # Early Stopping: Halts training if no improvement after 6 epochs
         EarlyStopping(
             monitor='val_dice_coef',
-            patience=6,
+            patience=8,
             mode='max',
             restore_best_weights=True,
             verbose=1
         ),
-        # Telemetry: Saves training logs to CSV
         CSVLogger(
             filename=csv_log_path,
             separator=',',
@@ -122,10 +109,9 @@ def main():
         )
     ]
 
-    # 5. Load Data and Train
     train_gen, val_gen = get_dataset_generators(
-        image_dir="lunar_dataset/images/render",  # Adjust path based on where it extracts in Colab
-        mask_dir="lunar_dataset/images/ground",   # Adjust path based on where it extracts in Colab
+        image_dir="lunar_dataset/images/render",
+        mask_dir="lunar_dataset/images/ground",
         batch_size=args.batch_size
     )
 
