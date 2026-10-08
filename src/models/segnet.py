@@ -5,18 +5,22 @@ from keras.models import Model
 
 class MaxPoolingWithArgmax2D(Layer):
     """
-    2x2 max pooling that ALSO returns the argmax indices.
+    2x2 max pooling that ALSO returns which of the 4 positions won (0-3).
     SegNet's signature trick: the decoder reuses these indices to unpool.
+    Built from plain reshape/max/argmax ops so it is XLA-compatible.
     """
     def call(self, x):
-        pooled, indices = tf.nn.max_pool_with_argmax(
-            x, ksize=2, strides=2, padding="SAME", include_batch_in_index=True
-        )
+        _, h, w, c = x.shape
+        x = tf.reshape(x, [-1, h // 2, 2, w // 2, 2, c])
+        x = tf.transpose(x, [0, 1, 3, 5, 2, 4])          # (B, h/2, w/2, C, 2, 2)
+        x = tf.reshape(x, [-1, h // 2, w // 2, c, 4])    # flatten each 2x2 window
+        pooled = tf.reduce_max(x, axis=-1)
+        indices = tf.argmax(x, axis=-1, output_type=tf.int32)
         return pooled, indices
 
     def compute_output_shape(self, input_shape):
         b, h, w, c = input_shape
-        out = (b, None if h is None else (h + 1) // 2, None if w is None else (w + 1) // 2, c)
+        out = (b, None if h is None else h // 2, None if w is None else w // 2, c)
         return out, out
 
 
@@ -27,16 +31,12 @@ class MaxUnpooling2D(Layer):
     """
     def call(self, inputs):
         pooled, indices = inputs
-        shape = tf.shape(pooled)
-        b, h, w, c = shape[0], shape[1], shape[2], shape[3]
-        flat_size = tf.cast(b * h * 2 * w * 2 * c, indices.dtype)
-
-        out = tf.scatter_nd(
-            tf.expand_dims(tf.reshape(indices, [-1]), 1),
-            tf.reshape(pooled, [-1]),
-            tf.reshape(flat_size, [1]),
-        )
-        return tf.reshape(out, [b, h * 2, w * 2, c])
+        _, h, w, c = pooled.shape
+        mask = tf.one_hot(indices, 4, dtype=pooled.dtype)        # (B, h, w, C, 4)
+        y = mask * tf.expand_dims(pooled, -1)
+        y = tf.reshape(y, [-1, h, w, c, 2, 2])
+        y = tf.transpose(y, [0, 1, 4, 2, 5, 3])                  # (B, h, 2, w, 2, C)
+        return tf.reshape(y, [-1, h * 2, w * 2, c])
 
     def compute_output_shape(self, input_shape):
         b, h, w, c = input_shape[0]
