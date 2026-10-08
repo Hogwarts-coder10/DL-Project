@@ -43,13 +43,16 @@ class MaxUnpooling2D(Layer):
         return (b, None if h is None else h * 2, None if w is None else w * 2, c)
 
 
-def conv_block(x, filters, num_convs=2):
+def conv_block(x, filters, num_convs=2, out_filters=None):
     """
     Standard block: (Conv2D -> BatchNorm -> ReLU) x num_convs
-    Used repeatedly throughout the encoder and decoder.
+    If out_filters is given, the LAST conv uses it instead of `filters`
+    (SegNet's decoder uses this to shrink channels so they match the
+    saved pooling indices of the next level).
     """
-    for _ in range(num_convs):
-        x = Conv2D(filters, (3, 3), padding="same", kernel_initializer="he_normal")(x)
+    for i in range(num_convs):
+        f = out_filters if (out_filters and i == num_convs - 1) else filters
+        x = Conv2D(f, (3, 3), padding="same", kernel_initializer="he_normal")(x)
         x = BatchNormalization()(x)
         x = Activation("relu")(x)
     return x
@@ -83,16 +86,16 @@ def build_model(input_shape=(256, 256, 3), num_classes=3):
 
     # --- The Decoder (Unpooling with saved indices, no skip concatenation) ---
     u5 = MaxUnpooling2D()([p5, idx5])
-    d5 = conv_block(u5, nb_filter[4], 3)
+    d5 = conv_block(u5, nb_filter[4], 3)                          # 512 -> matches idx4
 
     u4 = MaxUnpooling2D()([d5, idx4])
-    d4 = conv_block(u4, nb_filter[3], 3)
+    d4 = conv_block(u4, nb_filter[3], 3, out_filters=nb_filter[2])  # 512 -> 256, matches idx3
 
     u3 = MaxUnpooling2D()([d4, idx3])
-    d3 = conv_block(u3, nb_filter[2], 3)
+    d3 = conv_block(u3, nb_filter[2], 3, out_filters=nb_filter[1])  # 256 -> 128, matches idx2
 
     u2 = MaxUnpooling2D()([d3, idx2])
-    d2 = conv_block(u2, nb_filter[1], 2)
+    d2 = conv_block(u2, nb_filter[1], 2, out_filters=nb_filter[0])  # 128 -> 64, matches idx1
 
     u1 = MaxUnpooling2D()([d2, idx1])
     d1 = conv_block(u1, nb_filter[0], 2)
