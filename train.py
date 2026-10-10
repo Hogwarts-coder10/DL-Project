@@ -1,4 +1,8 @@
 import os
+# Force CUDA async allocator and disable XLA auto-JIT before TF imports
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=0'
+
 import argparse
 import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping, ReduceLROnPlateau
@@ -76,7 +80,8 @@ def main():
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         loss=cce_loss,
-        metrics=["accuracy", dice_coef]
+        metrics=["accuracy", dice_coef],
+        jit_compile=False
     )
 
     callbacks = [
