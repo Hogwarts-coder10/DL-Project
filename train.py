@@ -75,7 +75,7 @@ def main():
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-        loss=cce_dice_loss,
+        loss=cce_loss,
         metrics=["accuracy", dice_coef]
     )
 
