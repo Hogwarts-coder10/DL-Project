@@ -16,7 +16,7 @@ if gpus:
         print(f"GPU memory growth setting error: {e}")
 # ============================================================================
 
-from src.metrics.losses import cce_dice_loss, dice_coef
+from src.metrics.losses import cce_loss, dice_coef
 from src.generator.generator import get_dataset_generators
 
 
